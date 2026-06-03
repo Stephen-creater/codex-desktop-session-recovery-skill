@@ -132,6 +132,15 @@ def dedupe_keep_order(items: list[str]) -> list[str]:
     return result
 
 
+def choose_workspace_root(cwd: str, saved_roots: list[str]) -> str:
+    cwd = normalize_path(cwd)
+    candidates = [root for root in saved_roots if is_prefix(root, cwd)]
+    if candidates:
+        candidates.sort(key=len, reverse=True)
+        return candidates[0]
+    return cwd
+
+
 def collect_audit(codex_home: Path, recent_limit: int = RECENT_WINDOW, state_override: dict | None = None) -> dict:
     codex_home = codex_home.expanduser()
     db_path = codex_home / "state_5.sqlite"
@@ -269,24 +278,6 @@ def build_repair_plan(audit: dict) -> dict:
     current_saved_roots = list(state["saved_roots"])
     current_project_order = list(state["project_order"])
 
-    next_projectless = sorted(
-        thread_id
-        for thread_id in current_projectless
-        if thread_id in active_by_id and is_projectless_cwd(codex_home, active_by_id[thread_id]["cwd"])
-    )
-    removed_projectless = sorted(current_projectless - set(next_projectless))
-
-    next_hints: dict[str, str] = {}
-    for thread_id in next_projectless:
-        thread = active_by_id[thread_id]
-        cwd = thread["cwd"]
-        hint = current_hints.get(thread_id)
-        if hint and (not cwd or is_prefix(hint, cwd)):
-            next_hints[thread_id] = hint
-        else:
-            next_hints[thread_id] = codex_home
-    removed_hints = sorted(set(current_hints) - set(next_hints))
-
     ordered_cwds = sorted(
         cwd_stats.values(),
         key=lambda item: (-item["latest_updated_at"], item["cwd"]),
@@ -298,12 +289,35 @@ def build_repair_plan(audit: dict) -> dict:
     added_saved_roots = [root for root in next_saved_roots if root not in current_saved_roots]
     added_project_order = [root for root in next_project_order if root not in current_project_order]
 
+    next_projectless = sorted(
+        thread_id
+        for thread_id, thread in active_by_id.items()
+        if is_projectless_cwd(codex_home, thread["cwd"])
+    )
+    removed_projectless = sorted(current_projectless - set(next_projectless))
+    added_projectless = sorted(set(next_projectless) - current_projectless)
+
+    next_hints: dict[str, str] = {}
+    for thread_id, thread in active_by_id.items():
+        cwd = thread["cwd"]
+        if is_projectless_cwd(codex_home, cwd):
+            continue
+        next_hints[thread_id] = choose_workspace_root(cwd, next_saved_roots)
+    removed_hints = sorted(set(current_hints) - set(next_hints))
+    added_hints = sorted(set(next_hints) - set(current_hints))
+    changed_hints = sorted(
+        thread_id for thread_id in set(next_hints).intersection(current_hints) if next_hints[thread_id] != current_hints[thread_id]
+    )
+
     return {
         "index": {
             "next_projectless_ids": next_projectless,
             "next_thread_workspace_root_hints": next_hints,
             "removed_projectless_ids": removed_projectless,
+            "added_projectless_ids": added_projectless,
             "removed_hint_ids": removed_hints,
+            "added_hint_ids": added_hints,
+            "changed_hint_ids": changed_hints,
         },
         "project_order": {
             "next_saved_roots": next_saved_roots,
@@ -394,7 +408,8 @@ def repair_needed(audit: dict) -> bool:
             counts["projectless_nonchat"] > 0,
             counts["missing_saved_roots"] > 0,
             counts["projectless_thread_ids"] > 0,
-            counts["thread_workspace_root_hints"] > 0,
+            counts["thread_workspace_root_hints"] != counts["external_project_threads"],
+            counts["session_index_missing"] > 0,
         ]
     )
 
@@ -490,8 +505,12 @@ def summarize_plan(plan: dict) -> str:
         [
             "Planned index repair:",
             f"  remove stale or misclassified projectless ids: {len(index['removed_projectless_ids'])}",
+            f"  add projectless ids: {len(index['added_projectless_ids'])}",
+            f"  add thread root hints: {len(index['added_hint_ids'])}",
+            f"  change thread root hints: {len(index['changed_hint_ids'])}",
             f"  remove stale thread root hints: {len(index['removed_hint_ids'])}",
             f"  resulting projectless ids: {len(index['next_projectless_ids'])}",
+            f"  resulting thread root hints: {len(index['next_thread_workspace_root_hints'])}",
             "Planned project order repair:",
             f"  add saved workspace roots: {len(order['added_saved_roots'])}",
             f"  add project order entries: {len(order['added_project_order'])}",
@@ -579,6 +598,7 @@ def compare_audits(before: dict, after: dict) -> str:
         f"  active threads unchanged: {b['threads_active']} -> {a['threads_active']}",
         f"  session index missing: {b['session_index_missing']} -> {a['session_index_missing']}",
         f"  misclassified projectless threads: {b['projectless_nonchat']} -> {a['projectless_nonchat']}",
+        f"  thread workspace root hints: {b['thread_workspace_root_hints']} -> {a['thread_workspace_root_hints']}",
         f"  exact saved cwd roots: {b['exact_saved_root_matches']} -> {a['exact_saved_root_matches']}",
         f"  missing exact cwd roots: {b['missing_saved_roots']} -> {a['missing_saved_roots']}",
     ]

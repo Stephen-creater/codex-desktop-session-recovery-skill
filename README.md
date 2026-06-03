@@ -16,6 +16,8 @@ It does not patch the Codex app bundle. It focuses on the local state that is sa
 - `projectless-thread-ids`
 - `thread-workspace-root-hints`
 
+That last mapping matters: without it, a project can reappear in the sidebar while its internal chat list still shows `No chats` / `暂无对话`.
+
 ## What This Repo Delivers
 
 - A reusable local skill

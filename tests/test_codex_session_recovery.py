@@ -118,6 +118,7 @@ class RecoveryTests(unittest.TestCase):
         plan = MODULE.build_repair_plan(audit)
         self.assertEqual(plan["index"]["removed_projectless_ids"], ["thread-a"])
         self.assertEqual(plan["project_order"]["added_saved_roots"], ["/Users/test/Documents/Codex/2026-06-03/foo"])
+        self.assertEqual(plan["index"]["next_thread_workspace_root_hints"]["thread-b"], "/Users/test/project-real")
 
     def test_session_index_plan_adds_missing_entries(self) -> None:
         audit = MODULE.collect_audit(self.codex_home)

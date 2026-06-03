@@ -26,6 +26,21 @@ On this machine:
 
 This is a local state classification bug, not data loss.
 
+## Failure Mode 2b: Project Rows Exist, But Chat Lists Are Empty
+
+There is a closely related failure where the project row itself is visible in the Codex Desktop sidebar, but the project expands to `No chats` / `暂无对话`.
+
+On this machine, that state correlated with:
+
+- `electron-saved-workspace-roots` present
+- `project-order` present
+- `thread-workspace-root-hints` empty
+- real project threads still present in `state_5.sqlite`
+
+In practice, the project shell could render because the saved roots existed, while the project’s thread list stayed empty because the per-thread root hints were missing.
+
+This is why the repair now rebuilds `thread-workspace-root-hints` for all active external project threads instead of only cleaning up stale entries.
+
 ## Failure Mode 3: Path / Root Identity Drift
 
 Desktop project history is keyed by `cwd`. The app-server protocol defines the `thread/list` `cwd` filter as an exact match filter, not a fuzzy ancestor match. That means small path identity problems can hide history:
