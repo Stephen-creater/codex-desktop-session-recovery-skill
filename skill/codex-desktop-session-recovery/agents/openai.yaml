@@ -1,0 +1,5 @@
+version: 1
+display_name: Codex Session Recovery
+short_description: Recover hidden Codex Desktop chats from local state.
+default_prompt: Audit Codex Desktop local session state, explain whether chats are missing or only hidden, then preview or apply the safest repair path.
+
