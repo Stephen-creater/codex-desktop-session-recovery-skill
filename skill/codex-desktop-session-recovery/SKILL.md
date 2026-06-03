@@ -27,6 +27,18 @@ python3 scripts/codex_session_recovery.py repair
 python3 scripts/codex_session_recovery.py repair --apply
 ```
 
+If only the local session index is stale or incomplete:
+
+```bash
+python3 scripts/codex_session_recovery.py repair-session-index --apply
+```
+
+If the project is healthy in local state but still hidden because it fell outside the recent window:
+
+```bash
+python3 scripts/codex_session_recovery.py surface-project --cwd "/absolute/project/path" --apply
+```
+
 4. Verify with the backup directory returned by the repair command:
 
 ```bash
@@ -51,6 +63,8 @@ python3 scripts/codex_session_recovery.py watchdog-install
 - stale `thread-workspace-root-hints`
 - missing exact `cwd` roots in saved workspace roots
 - missing exact `cwd` roots in project ordering
+- missing or stale `session_index.jsonl` entries
+- old project threads that need to be surfaced into the recent window
 
 ## Optional Background Guard
 

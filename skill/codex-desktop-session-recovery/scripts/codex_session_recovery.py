@@ -104,6 +104,22 @@ def load_session_index(path: Path) -> dict[str, dict]:
     return entries
 
 
+def iso_from_unix(seconds: int | float | str | None) -> str:
+    if seconds is None:
+        return ""
+    return datetime.fromtimestamp(int(seconds), tz=timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+
+
+def write_session_index(path: Path, entries: list[dict]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile("w", delete=False, dir=path.parent, encoding="utf-8") as handle:
+        for entry in entries:
+            handle.write(json.dumps(entry, ensure_ascii=False))
+            handle.write("\n")
+        tmp_path = Path(handle.name)
+    tmp_path.replace(path)
+
+
 def dedupe_keep_order(items: list[str]) -> list[str]:
     seen: set[str] = set()
     result: list[str] = []
@@ -236,6 +252,9 @@ def collect_audit(codex_home: Path, recent_limit: int = RECENT_WINDOW, state_ove
             "all_by_id": all_by_id,
             "cwd_stats": cwd_stats,
         },
+        "session_index": {
+            "entries_by_id": session_index,
+        },
     }
 
 
@@ -295,6 +314,30 @@ def build_repair_plan(audit: dict) -> dict:
     }
 
 
+def build_session_index_plan(audit: dict) -> dict:
+    active_by_id = audit["threads"]["active_by_id"]
+    current_entries = audit["session_index"]["entries_by_id"]
+    next_entries = []
+    missing_ids = []
+    stale_ids = []
+    for thread in sorted(active_by_id.values(), key=lambda item: (-int(item["updated_at"]), item["id"])):
+        current = current_entries.get(thread["id"], {})
+        next_entry = dict(current) if current else {}
+        next_entry["id"] = thread["id"]
+        next_entry["thread_name"] = thread["title"]
+        next_entry["updated_at"] = iso_from_unix(thread["updated_at"])
+        next_entries.append(next_entry)
+        if not current:
+            missing_ids.append(thread["id"])
+        elif current.get("thread_name") != next_entry["thread_name"] or current.get("updated_at") != next_entry["updated_at"]:
+            stale_ids.append(thread["id"])
+    return {
+        "next_entries": next_entries,
+        "missing_ids": missing_ids,
+        "stale_ids": stale_ids,
+    }
+
+
 def backup_paths(codex_home: Path, files: list[Path]) -> Path:
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     backup_dir = codex_home / "backups" / "session-recovery" / stamp
@@ -305,8 +348,28 @@ def backup_paths(codex_home: Path, files: list[Path]) -> Path:
     return backup_dir
 
 
-def apply_plan(codex_home: Path, plan: dict, include_index: bool, include_project_order: bool) -> Path:
+def backup_sqlite_database(db_path: Path, backup_dir: Path) -> Path:
+    backup_target = backup_dir / db_path.name
+    source = sqlite3.connect(str(db_path))
+    dest = sqlite3.connect(str(backup_target))
+    try:
+        source.backup(dest)
+    finally:
+        dest.close()
+        source.close()
+    return backup_target
+
+
+def apply_plan(
+    codex_home: Path,
+    plan: dict,
+    include_index: bool,
+    include_project_order: bool,
+    session_index_plan: dict | None = None,
+    include_session_index: bool = False,
+) -> Path:
     state_path = codex_home / ".codex-global-state.json"
+    session_index_path = codex_home / "session_index.jsonl"
     state = load_json(state_path)
     if include_index:
         state["projectless-thread-ids"] = plan["index"]["next_projectless_ids"]
@@ -314,8 +377,13 @@ def apply_plan(codex_home: Path, plan: dict, include_index: bool, include_projec
     if include_project_order:
         state["electron-saved-workspace-roots"] = plan["project_order"]["next_saved_roots"]
         state["project-order"] = plan["project_order"]["next_project_order"]
-    backup_dir = backup_paths(codex_home, [state_path])
+    backup_targets = [state_path]
+    if include_session_index:
+        backup_targets.append(session_index_path)
+    backup_dir = backup_paths(codex_home, backup_targets)
     write_json_atomic(state_path, state)
+    if include_session_index and session_index_plan is not None:
+        write_session_index(session_index_path, session_index_plan["next_entries"])
     return backup_dir
 
 
@@ -353,6 +421,7 @@ def render_watchdog_plist(script_path: Path, codex_home: Path, interval_seconds:
         ],
         "RunAtLoad": True,
         "StartInterval": interval_seconds,
+        "WatchPaths": [str(codex_home / ".codex-global-state.json")],
         "StandardOutPath": str(log_path),
         "StandardErrorPath": str(log_path),
         "WorkingDirectory": str(script_path.parent),
@@ -426,6 +495,17 @@ def summarize_plan(plan: dict) -> str:
             "Planned project order repair:",
             f"  add saved workspace roots: {len(order['added_saved_roots'])}",
             f"  add project order entries: {len(order['added_project_order'])}",
+        ]
+    )
+
+
+def summarize_session_index_plan(session_index_plan: dict) -> str:
+    return "\n".join(
+        [
+            "Planned session index repair:",
+            f"  add missing session index entries: {len(session_index_plan['missing_ids'])}",
+            f"  refresh stale session index entries: {len(session_index_plan['stale_ids'])}",
+            f"  resulting session index entries: {len(session_index_plan['next_entries'])}",
         ]
     )
 
@@ -505,6 +585,55 @@ def compare_audits(before: dict, after: dict) -> str:
     return "\n".join(lines)
 
 
+def latest_thread_for_cwd(audit: dict, cwd: str) -> dict | None:
+    cwd = normalize_path(cwd)
+    matches = [thread for thread in audit["threads"]["active_by_id"].values() if thread["cwd"] == cwd]
+    if not matches:
+        return None
+    matches.sort(key=lambda item: (-int(item["updated_at"]), item["id"]))
+    return matches[0]
+
+
+def surface_project_thread(codex_home: Path, thread_id: str, pin: bool = False) -> Path:
+    backup_dir = codex_home / "backups" / "session-recovery" / datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    state_path = codex_home / ".codex-global-state.json"
+    db_path = codex_home / "state_5.sqlite"
+    session_index_path = codex_home / "session_index.jsonl"
+    shutil.copy2(state_path, backup_dir / state_path.name)
+    if session_index_path.exists():
+        shutil.copy2(session_index_path, backup_dir / session_index_path.name)
+    backup_sqlite_database(db_path, backup_dir)
+    now = int(datetime.now(timezone.utc).timestamp())
+    now_ms = now * 1000
+    con = sqlite3.connect(str(db_path))
+    try:
+        con.execute("update threads set updated_at=?, updated_at_ms=? where id=?", (now, now_ms, thread_id))
+        con.commit()
+        row = con.execute("select id, title from threads where id=?", (thread_id,)).fetchone()
+    finally:
+        con.close()
+    current_entries = load_session_index(session_index_path)
+    entry = dict(current_entries.get(thread_id, {}))
+    entry["id"] = thread_id
+    entry["thread_name"] = row[1] if row else entry.get("thread_name", "")
+    entry["updated_at"] = iso_from_unix(now)
+    current_entries[thread_id] = entry
+    next_entries = sorted(
+        current_entries.values(),
+        key=lambda item: (item.get("updated_at", ""), item.get("id", "")),
+        reverse=True,
+    )
+    write_session_index(session_index_path, next_entries)
+    if pin:
+        state = load_json(state_path)
+        current = state.get("pinned-thread-ids", [])
+        if thread_id not in current:
+            state["pinned-thread-ids"] = [thread_id] + current
+            write_json_atomic(state_path, state)
+    return backup_dir
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Audit and repair Codex Desktop local session visibility state.")
     parser.add_argument("--codex-home", default="~/.codex", help="Codex home directory. Default: ~/.codex")
@@ -520,6 +649,9 @@ def parse_args() -> argparse.Namespace:
     repair_order = sub.add_parser("repair-project-order", help="Repair saved workspace roots and project ordering.")
     repair_order.add_argument("--apply", action="store_true", help="Write the repair instead of previewing it.")
 
+    repair_session_index = sub.add_parser("repair-session-index", help="Repair session_index.jsonl from active threads.")
+    repair_session_index.add_argument("--apply", action="store_true", help="Write the repair instead of previewing it.")
+
     repair = sub.add_parser("repair", help="Run both repair steps together.")
     repair.add_argument("--apply", action="store_true", help="Write the repair instead of previewing it.")
 
@@ -531,6 +663,11 @@ def parse_args() -> argparse.Namespace:
 
     report = sub.add_parser("report", help="Generate a Markdown report.")
     report.add_argument("--backup-dir", help="Optional backup directory to mention in the report.")
+
+    surface = sub.add_parser("surface-project", help="Bump an old project's latest thread into the recent window.")
+    surface.add_argument("--cwd", required=True, help="Exact project cwd to surface.")
+    surface.add_argument("--pin", action="store_true", help="Also pin the surfaced thread.")
+    surface.add_argument("--apply", action="store_true", help="Write the change instead of previewing it.")
 
     watchdog_print = sub.add_parser("watchdog-print", help="Print a launchd plist for the self-healing watchdog.")
     watchdog_print.add_argument("--interval-seconds", type=int, default=DEFAULT_WATCHDOG_INTERVAL, help="launchd StartInterval value.")
@@ -555,6 +692,7 @@ def main() -> int:
     codex_home = Path(normalize_path(args.codex_home))
     audit = collect_audit(codex_home)
     plan = build_repair_plan(audit)
+    session_index_plan = build_session_index_plan(audit)
 
     if args.command == "audit":
         if args.json:
@@ -568,17 +706,28 @@ def main() -> int:
             print(summarize_audit(audit))
         return 0
 
-    if args.command in {"repair-index", "repair-project-order", "repair"}:
+    if args.command in {"repair-index", "repair-project-order", "repair-session-index", "repair"}:
         include_index = args.command in {"repair-index", "repair"}
         include_order = args.command in {"repair-project-order", "repair"}
+        include_session_index = args.command in {"repair-session-index", "repair"}
         print(summarize_audit(audit))
         print()
         print(summarize_plan(plan))
+        if include_session_index:
+            print()
+            print(summarize_session_index_plan(session_index_plan))
         if not args.apply:
             print()
             print("Dry-run only. Re-run with --apply to write the repair.")
             return 0
-        backup_dir = apply_plan(codex_home, plan, include_index, include_order)
+        backup_dir = apply_plan(
+            codex_home,
+            plan,
+            include_index,
+            include_order,
+            session_index_plan=session_index_plan,
+            include_session_index=include_session_index,
+        )
         after = collect_audit(codex_home)
         print()
         print(compare_audits(audit, after))
@@ -590,15 +739,26 @@ def main() -> int:
         print(summarize_audit(audit))
         print()
         print(summarize_plan(plan))
+        print()
+        print(summarize_session_index_plan(session_index_plan))
         if not repair_needed(audit):
             print()
-            print("No repair needed.")
-            return 0
+            if len(session_index_plan["missing_ids"]) == 0 and len(session_index_plan["stale_ids"]) == 0:
+                print("No repair needed.")
+                return 0
+            print("Project/root state is healthy, but session index still needs repair.")
         if not args.apply:
             print()
             print("Repair is needed. Re-run with --apply to write the repair.")
             return 0
-        backup_dir = apply_plan(codex_home, plan, True, True)
+        backup_dir = apply_plan(
+            codex_home,
+            plan,
+            True,
+            True,
+            session_index_plan=session_index_plan,
+            include_session_index=True,
+        )
         after = collect_audit(codex_home)
         print()
         print(compare_audits(audit, after))
@@ -618,6 +778,25 @@ def main() -> int:
     if args.command == "report":
         backup_dir = args.backup_dir
         print(render_report(audit, plan=plan, backup_dir=backup_dir))
+        return 0
+
+    if args.command == "surface-project":
+        thread = latest_thread_for_cwd(audit, args.cwd)
+        if thread is None:
+            print(f"No active thread found for cwd: {normalize_path(args.cwd)}")
+            return 1
+        print(f"Surface candidate thread: {thread['id']}")
+        print(f"CWD: {thread['cwd']}")
+        print(f"Title: {thread['title']}")
+        print(f"Previous updated_at: {iso_from_unix(thread['updated_at'])}")
+        if not args.apply:
+            print("Dry-run only. Re-run with --apply to bump this thread into the recent window.")
+            return 0
+        before = collect_audit(codex_home)
+        backup_dir = surface_project_thread(codex_home, thread["id"], pin=args.pin)
+        after = collect_audit(codex_home)
+        print(compare_audits(before, after))
+        print(f"Applied. Backup written to: {backup_dir}")
         return 0
 
     if args.command == "watchdog-print":

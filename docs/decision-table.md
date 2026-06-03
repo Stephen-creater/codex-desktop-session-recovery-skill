@@ -26,6 +26,10 @@ Escalate when any of these are true:
 4. `verify --backup-dir ...`
 5. if still broken, collect `report` output and open/update a GitHub issue
 
+If only `session_index.jsonl` is stale or incomplete, run `repair-session-index --apply`.
+
+If a specific old project is still hidden only because it sits outside the recent window, run `surface-project --cwd <project_path> --apply`.
+
 ## If The Bug Recurs After Updates
 
 Use the built-in `heal` mode or install the optional launchd watchdog.
@@ -33,6 +37,7 @@ Use the built-in `heal` mode or install the optional launchd watchdog.
 - `heal` writes only when the local state is broken again
 - it does not touch session content
 - it rewrites only `.codex-global-state.json`
+- the watchdog also reacts when `.codex-global-state.json` changes, so it can undo live regressions from the running desktop app
 
 ## Default Safety Rules
 

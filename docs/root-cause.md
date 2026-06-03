@@ -50,3 +50,14 @@ The repair is intentionally conservative:
 - It does not claim the recent window bug is fully solved in the app UI.
 - It does not modify the app bundle.
 - It does not rewrite your session content.
+
+## Additional Evidence From This Machine
+
+During validation in this run, `.codex-global-state.json` reverted back to the broken shape while Codex Desktop was still running:
+
+- saved workspace roots fell back from `105` to `22`
+- project order entries fell back from `105` to `17`
+- `projectless-thread-ids` returned from `0` to `71`
+- `thread-workspace-root-hints` returned from `0` to `71`
+
+That means a one-time repair is not enough. The desktop app can reintroduce the bad classification from its in-memory state. This is why the repository includes a self-healing watchdog that reacts to file changes and re-applies the repair when the bad state comes back.

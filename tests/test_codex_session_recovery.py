@@ -119,6 +119,14 @@ class RecoveryTests(unittest.TestCase):
         self.assertEqual(plan["index"]["removed_projectless_ids"], ["thread-a"])
         self.assertEqual(plan["project_order"]["added_saved_roots"], ["/Users/test/Documents/Codex/2026-06-03/foo"])
 
+    def test_session_index_plan_adds_missing_entries(self) -> None:
+        audit = MODULE.collect_audit(self.codex_home)
+        session_plan = MODULE.build_session_index_plan(audit)
+        self.assertEqual(len(session_plan["missing_ids"]), 0)
+        self.assertEqual(len(session_plan["next_entries"]), 2)
+        self.assertEqual(session_plan["next_entries"][0]["id"], "thread-a")
+        self.assertEqual(session_plan["next_entries"][0]["thread_name"], "foo")
+
     def test_watchdog_plist_contains_heal_command(self) -> None:
         script_path = self.codex_home / "tool.py"
         log_path = self.codex_home / "watchdog.log"
@@ -128,6 +136,13 @@ class RecoveryTests(unittest.TestCase):
         self.assertIn("heal", payload["ProgramArguments"])
         self.assertIn("--apply", payload["ProgramArguments"])
         self.assertEqual(payload["StartInterval"], 1800)
+        self.assertEqual(payload["WatchPaths"], [str(self.codex_home / ".codex-global-state.json")])
+
+    def test_latest_thread_for_cwd_returns_newest_match(self) -> None:
+        audit = MODULE.collect_audit(self.codex_home)
+        thread = MODULE.latest_thread_for_cwd(audit, "/Users/test/Documents/Codex/2026-06-03/foo")
+        self.assertIsNotNone(thread)
+        self.assertEqual(thread["id"], "thread-a")
 
 
 if __name__ == "__main__":

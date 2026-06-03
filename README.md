@@ -19,7 +19,7 @@ It does not patch the Codex app bundle. It focuses on the local state that is sa
 ## What This Repo Delivers
 
 - A reusable local skill
-- A single Python recovery tool with `audit`, `repair`, `verify`, and `report`
+- A single Python recovery tool with `audit`, `repair`, `repair-session-index`, `heal`, `verify`, and `report`
 - A root-cause model for three common failure modes
 - A conservative repair flow with dry-run by default and automatic backup on write
 
@@ -52,6 +52,18 @@ Apply the repair with a minimal backup:
 python3 skill/codex-desktop-session-recovery/scripts/codex_session_recovery.py repair --apply
 ```
 
+Repair just the local session index:
+
+```bash
+python3 skill/codex-desktop-session-recovery/scripts/codex_session_recovery.py repair-session-index --apply
+```
+
+Force one old project back into the recent window:
+
+```bash
+python3 skill/codex-desktop-session-recovery/scripts/codex_session_recovery.py surface-project --cwd "/absolute/project/path" --apply
+```
+
 Verify the result against the backup that was created:
 
 ```bash
@@ -80,7 +92,7 @@ python3 skill/codex-desktop-session-recovery/scripts/codex_session_recovery.py h
 
 ## Self-Healing Watchdog
 
-This repo also supports an optional macOS `launchd` watchdog that runs `heal --apply` at login and on a schedule.
+This repo also supports an optional macOS `launchd` watchdog that runs `heal --apply` at login, on a schedule, and whenever `.codex-global-state.json` changes.
 
 Preview the plist:
 
