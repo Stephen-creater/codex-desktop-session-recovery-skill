@@ -119,6 +119,16 @@ class RecoveryTests(unittest.TestCase):
         self.assertEqual(plan["index"]["removed_projectless_ids"], ["thread-a"])
         self.assertEqual(plan["project_order"]["added_saved_roots"], ["/Users/test/Documents/Codex/2026-06-03/foo"])
 
+    def test_watchdog_plist_contains_heal_command(self) -> None:
+        script_path = self.codex_home / "tool.py"
+        log_path = self.codex_home / "watchdog.log"
+        plist_bytes = MODULE.render_watchdog_plist(script_path, self.codex_home, 1800, log_path)
+        payload = MODULE.plistlib.loads(plist_bytes)
+        self.assertEqual(payload["Label"], MODULE.WATCHDOG_LABEL)
+        self.assertIn("heal", payload["ProgramArguments"])
+        self.assertIn("--apply", payload["ProgramArguments"])
+        self.assertEqual(payload["StartInterval"], 1800)
+
 
 if __name__ == "__main__":
     unittest.main()

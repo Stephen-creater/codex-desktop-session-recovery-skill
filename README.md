@@ -63,6 +63,12 @@ Generate a Markdown incident report:
 python3 skill/codex-desktop-session-recovery/scripts/codex_session_recovery.py report
 ```
 
+Run an idempotent self-heal preview:
+
+```bash
+python3 skill/codex-desktop-session-recovery/scripts/codex_session_recovery.py heal
+```
+
 ## Repair Philosophy
 
 - Dry-run first
@@ -70,6 +76,28 @@ python3 skill/codex-desktop-session-recovery/scripts/codex_session_recovery.py r
 - Back up only the files being changed
 - Prefer state reclassification over destructive rewrites
 - Treat recent-window hiding and project-mapping breakage as separate bugs
+
+## Self-Healing Watchdog
+
+This repo also supports an optional macOS `launchd` watchdog that runs `heal --apply` at login and on a schedule.
+
+Preview the plist:
+
+```bash
+python3 skill/codex-desktop-session-recovery/scripts/codex_session_recovery.py watchdog-print
+```
+
+Install the watchdog:
+
+```bash
+python3 skill/codex-desktop-session-recovery/scripts/codex_session_recovery.py watchdog-install
+```
+
+Remove it:
+
+```bash
+python3 skill/codex-desktop-session-recovery/scripts/codex_session_recovery.py watchdog-uninstall
+```
 
 ## Local Installation As A Skill
 

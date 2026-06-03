@@ -26,10 +26,17 @@ Escalate when any of these are true:
 4. `verify --backup-dir ...`
 5. if still broken, collect `report` output and open/update a GitHub issue
 
+## If The Bug Recurs After Updates
+
+Use the built-in `heal` mode or install the optional launchd watchdog.
+
+- `heal` writes only when the local state is broken again
+- it does not touch session content
+- it rewrites only `.codex-global-state.json`
+
 ## Default Safety Rules
 
 - never edit `state_5.sqlite` directly in v1
 - back up `.codex-global-state.json` before any write
 - preserve existing root ordering where possible
 - append discovered roots by recency instead of fully re-sorting everything
-

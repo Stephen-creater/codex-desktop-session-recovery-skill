@@ -39,6 +39,12 @@ python3 scripts/codex_session_recovery.py verify --backup-dir <backup_dir>
 python3 scripts/codex_session_recovery.py report
 ```
 
+6. If the same local state bug keeps recurring after Codex Desktop updates, install the optional self-healing watchdog:
+
+```bash
+python3 scripts/codex_session_recovery.py watchdog-install
+```
+
 ## What This Skill Repairs
 
 - stale `projectless-thread-ids`
@@ -46,10 +52,13 @@ python3 scripts/codex_session_recovery.py report
 - missing exact `cwd` roots in saved workspace roots
 - missing exact `cwd` roots in project ordering
 
+## Optional Background Guard
+
+The watchdog runs `heal --apply` through `launchd`. Use it when the user wants a durable local workaround for a recurring desktop-side regression.
+
 ## Safety Rules
 
 - Do not edit `state_5.sqlite` directly in v1.
 - Default to dry-run.
 - On write, keep the backup path from the tool output.
 - Treat "data missing on disk" and "sidebar not showing the data" as separate diagnoses.
-

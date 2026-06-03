@@ -5,14 +5,18 @@ import argparse
 import json
 import os
 from pathlib import Path
+import plistlib
 import shutil
 import sqlite3
+import subprocess
 import sys
 import tempfile
 from collections import Counter, defaultdict
 from datetime import datetime, timezone
 
 RECENT_WINDOW = 50
+WATCHDOG_LABEL = "com.stephen.codex-session-recovery"
+DEFAULT_WATCHDOG_INTERVAL = 1800
 EXTERNAL_ISSUES = [
     "https://developers.openai.com/codex/app/features",
     "https://developers.openai.com/codex/memories",
@@ -176,6 +180,15 @@ def collect_audit(codex_home: Path, recent_limit: int = RECENT_WINDOW, state_ove
     visible_recent_cwd_count = len(recent_cwds)
     exact_saved_root_matches = sum(1 for cwd in cwd_stats if cwd in saved_roots)
     missing_saved_roots = [cwd for cwd in cwd_stats if cwd not in saved_roots]
+    hidden_project_samples = [
+        item["cwd"]
+        for item in sorted(cwd_stats.values(), key=lambda item: (-item["latest_updated_at"], item["cwd"]))
+        if item["cwd"] not in recent_cwds
+    ][:20]
+    heavy_recent_projects = [
+        {"cwd": cwd, "count": count}
+        for cwd, count in Counter(thread["cwd"] for thread in recent_threads if thread["cwd"]).most_common(10)
+    ]
 
     return {
         "codex_home": str(codex_home),
@@ -215,6 +228,8 @@ def collect_audit(codex_home: Path, recent_limit: int = RECENT_WINDOW, state_ove
             "projectless_bad_hint": projectless_bad_hint,
             "missing_saved_roots": missing_saved_roots[:200],
             "recent_cwd_counts": Counter(thread["cwd"] for thread in recent_threads if thread["cwd"]).most_common(20),
+            "hidden_project_samples": hidden_project_samples,
+            "heavy_recent_projects": heavy_recent_projects,
         },
         "threads": {
             "active_by_id": active_by_id,
@@ -304,6 +319,66 @@ def apply_plan(codex_home: Path, plan: dict, include_index: bool, include_projec
     return backup_dir
 
 
+def repair_needed(audit: dict) -> bool:
+    counts = audit["counts"]
+    return any(
+        [
+            counts["projectless_nonchat"] > 0,
+            counts["missing_saved_roots"] > 0,
+            counts["projectless_thread_ids"] > 0,
+            counts["thread_workspace_root_hints"] > 0,
+        ]
+    )
+
+
+def default_watchdog_paths() -> tuple[Path, Path]:
+    home = Path.home()
+    return (
+        home / "Library" / "LaunchAgents" / f"{WATCHDOG_LABEL}.plist",
+        home / ".codex" / "log" / "codex-session-recovery-watchdog.log",
+    )
+
+
+def render_watchdog_plist(script_path: Path, codex_home: Path, interval_seconds: int, log_path: Path) -> bytes:
+    python = shutil.which("python3") or "/usr/bin/python3"
+    payload = {
+        "Label": WATCHDOG_LABEL,
+        "ProgramArguments": [
+            python,
+            str(script_path),
+            "--codex-home",
+            str(codex_home),
+            "heal",
+            "--apply",
+        ],
+        "RunAtLoad": True,
+        "StartInterval": interval_seconds,
+        "StandardOutPath": str(log_path),
+        "StandardErrorPath": str(log_path),
+        "WorkingDirectory": str(script_path.parent),
+    }
+    return plistlib.dumps(payload)
+
+
+def install_watchdog(script_path: Path, codex_home: Path, interval_seconds: int) -> tuple[Path, Path]:
+    plist_path, log_path = default_watchdog_paths()
+    plist_path.parent.mkdir(parents=True, exist_ok=True)
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    plist_path.write_bytes(render_watchdog_plist(script_path, codex_home, interval_seconds, log_path))
+    subprocess.run(["launchctl", "bootout", f"gui/{os.getuid()}", str(plist_path)], check=False, capture_output=True, text=True)
+    subprocess.run(["launchctl", "bootstrap", f"gui/{os.getuid()}", str(plist_path)], check=True, capture_output=True, text=True)
+    subprocess.run(["launchctl", "kickstart", "-k", f"gui/{os.getuid()}/{WATCHDOG_LABEL}"], check=False, capture_output=True, text=True)
+    return plist_path, log_path
+
+
+def uninstall_watchdog() -> Path:
+    plist_path, _ = default_watchdog_paths()
+    subprocess.run(["launchctl", "bootout", f"gui/{os.getuid()}", str(plist_path)], check=False, capture_output=True, text=True)
+    if plist_path.exists():
+        plist_path.unlink()
+    return plist_path
+
+
 def summarize_audit(audit: dict) -> str:
     counts = audit["counts"]
     evidence = audit["evidence"]
@@ -332,6 +407,10 @@ def summarize_audit(audit: dict) -> str:
         for thread_id in evidence["projectless_nonchat"][:10]:
             thread = audit["threads"]["active_by_id"][thread_id]
             lines.append(f"  {thread_id}  {thread['cwd']}")
+    if evidence["hidden_project_samples"]:
+        lines.append("Sample older projects that still depend on the recent-window bug being fixed upstream:")
+        for cwd in evidence["hidden_project_samples"][:10]:
+            lines.append(f"  {cwd}")
     return "\n".join(lines)
 
 
@@ -353,6 +432,7 @@ def summarize_plan(plan: dict) -> str:
 
 def render_report(audit: dict, plan: dict | None = None, backup_dir: str | None = None) -> str:
     counts = audit["counts"]
+    evidence = audit["evidence"]
     lines = [
         "# Codex Desktop Session Visibility Report",
         "",
@@ -377,9 +457,21 @@ def render_report(audit: dict, plan: dict | None = None, backup_dir: str | None 
         "2. `projectless-thread-ids` misclassification: normal project threads were flattened into projectless state.",
         "3. Exact `cwd` roots missing from saved workspace roots or project ordering.",
         "",
-        "## External References",
+        "## Sample Impacted Older Projects",
         "",
     ]
+    for cwd in evidence["hidden_project_samples"][:10]:
+        lines.append(f"- `{cwd}`")
+    lines.extend(
+        [
+            "",
+            "## Recent-Window Pressure",
+            "",
+        ]
+    )
+    for item in evidence["heavy_recent_projects"][:10]:
+        lines.append(f"- `{item['cwd']}` currently occupies `{item['count']}` thread slots in the top recent window")
+    lines.extend(["", "## External References", ""])
     for url in EXTERNAL_ISSUES:
         lines.append(f"- {url}")
     if plan is not None:
@@ -431,11 +523,22 @@ def parse_args() -> argparse.Namespace:
     repair = sub.add_parser("repair", help="Run both repair steps together.")
     repair.add_argument("--apply", action="store_true", help="Write the repair instead of previewing it.")
 
+    heal = sub.add_parser("heal", help="Apply the repair only if the current state needs it.")
+    heal.add_argument("--apply", action="store_true", help="Write when a repair is needed. Without this flag, heal behaves like a preview.")
+
     verify = sub.add_parser("verify", help="Verify current state or compare it to a backup.")
     verify.add_argument("--backup-dir", help="Backup directory created by a previous write.")
 
     report = sub.add_parser("report", help="Generate a Markdown report.")
     report.add_argument("--backup-dir", help="Optional backup directory to mention in the report.")
+
+    watchdog_print = sub.add_parser("watchdog-print", help="Print a launchd plist for the self-healing watchdog.")
+    watchdog_print.add_argument("--interval-seconds", type=int, default=DEFAULT_WATCHDOG_INTERVAL, help="launchd StartInterval value.")
+
+    watchdog_install = sub.add_parser("watchdog-install", help="Install and load a launchd watchdog that runs heal --apply.")
+    watchdog_install.add_argument("--interval-seconds", type=int, default=DEFAULT_WATCHDOG_INTERVAL, help="launchd StartInterval value.")
+
+    sub.add_parser("watchdog-uninstall", help="Unload and remove the launchd watchdog.")
 
     return parser.parse_args()
 
@@ -483,6 +586,26 @@ def main() -> int:
         print(f"Applied. Backup written to: {backup_dir}")
         return 0
 
+    if args.command == "heal":
+        print(summarize_audit(audit))
+        print()
+        print(summarize_plan(plan))
+        if not repair_needed(audit):
+            print()
+            print("No repair needed.")
+            return 0
+        if not args.apply:
+            print()
+            print("Repair is needed. Re-run with --apply to write the repair.")
+            return 0
+        backup_dir = apply_plan(codex_home, plan, True, True)
+        after = collect_audit(codex_home)
+        print()
+        print(compare_audits(audit, after))
+        print()
+        print(f"Applied. Backup written to: {backup_dir}")
+        return 0
+
     if args.command == "verify":
         if args.backup_dir:
             before_state = load_json(Path(normalize_path(args.backup_dir)) / ".codex-global-state.json")
@@ -495,6 +618,24 @@ def main() -> int:
     if args.command == "report":
         backup_dir = args.backup_dir
         print(render_report(audit, plan=plan, backup_dir=backup_dir))
+        return 0
+
+    if args.command == "watchdog-print":
+        script_path = Path(__file__).resolve()
+        plist_bytes = render_watchdog_plist(script_path, codex_home, args.interval_seconds, default_watchdog_paths()[1])
+        sys.stdout.buffer.write(plist_bytes)
+        return 0
+
+    if args.command == "watchdog-install":
+        script_path = Path(__file__).resolve()
+        plist_path, log_path = install_watchdog(script_path, codex_home, args.interval_seconds)
+        print(f"Installed watchdog: {plist_path}")
+        print(f"Watchdog log: {log_path}")
+        return 0
+
+    if args.command == "watchdog-uninstall":
+        plist_path = uninstall_watchdog()
+        print(f"Removed watchdog: {plist_path}")
         return 0
 
     raise AssertionError("unreachable")
