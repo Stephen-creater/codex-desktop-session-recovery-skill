@@ -29,10 +29,23 @@ That last mapping matters: without it, a project can reappear in the sidebar whi
 
 - [skill/codex-desktop-session-recovery/SKILL.md](skill/codex-desktop-session-recovery/SKILL.md)
 - [skill/codex-desktop-session-recovery/scripts/codex_session_recovery.py](skill/codex-desktop-session-recovery/scripts/codex_session_recovery.py)
+- [docs/current-status.md](docs/current-status.md)
 - [docs/root-cause.md](docs/root-cause.md)
 - [docs/decision-table.md](docs/decision-table.md)
 - [docs/community-signals.md](docs/community-signals.md)
 - [docs/article-draft.md](docs/article-draft.md)
+
+## Current Status
+
+The latest real-world outcome for this repo is tracked in [docs/current-status.md](docs/current-status.md).
+
+Short version:
+
+- project rows were recovered
+- multiple local index and mapping layers were repaired
+- historical thread data is still present on disk
+- the final Codex Desktop UI behavior for some old projects is still not fully restored
+- the project is now in a documented paused state rather than falsely claiming success
 
 ## Quick Start
 
