@@ -29,6 +29,7 @@ It does not patch the Codex app bundle. It focuses on the local state that is sa
 - [skill/codex-desktop-session-recovery/scripts/codex_session_recovery.py](skill/codex-desktop-session-recovery/scripts/codex_session_recovery.py)
 - [docs/root-cause.md](docs/root-cause.md)
 - [docs/decision-table.md](docs/decision-table.md)
+- [docs/community-signals.md](docs/community-signals.md)
 - [docs/article-draft.md](docs/article-draft.md)
 
 ## Quick Start
